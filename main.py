@@ -1,8 +1,13 @@
-from fastapi import FastAPI, Form, UploadFile
+from fastapi import FastAPI, Header, Query, Response, UploadFile, status
+from src.find_frequency_of_tokens import frequency_of_tokens
 from src.save_temporary_file import remove_temp_directory, save_temp
 import src.sentence_tokenizer as st
 import src.filetype_checker as fc
 import src.tesseract as tess
+import nltk
+from src.word_level_tokenizer import tokenize_at_word_level
+
+nltk.download("punkt")
 
 description = """
 This is a simple tool for splitting a document into sentences.
@@ -24,26 +29,45 @@ app = FastAPI(
 )
 
 
-@app.post("/tokenize/text", tags=["Tokenizer"], summary="Tokenize text into sentences.")
-async def tokenize_from_text(sentence: str = Form(...)):
-    tokens = st.sent_tokenize(sentence)
-    return {"Length": len(tokens), "Tokens": tokens}
-
-
 @app.post(
-    "/tokenize/file",
-    tags=["Tokenizer"],
-    summary="Tokenize text or image file into sentences.",
+    "/tokenize",
+    tags=["Sentence Tokenizer App"],
+    summary="Tokenize text or image file into sentences or words.",
 )
-async def tokenize_from_file(fileinput: UploadFile):
-    if fc.check_file_type(fileinput.filename).startswith("image"):
-        location = save_temp(fileinput)
-        text = tess.process_image(location)
-    elif fc.check_file_type(fileinput.filename).startswith("text"):
-        text = fileinput.file.read().decode("utf-8")
-    else:
-        return {"Error": "File type not supported."}
+async def tokenize_from_file(
+    fileinput: UploadFile,
+    tokenize_level: str = Query("Tokenize at level", enum=["sentence", "words"]),
+    need_frequency: bool | None = Header("Need Frequency of Words/Sentences"),
+    response: Response = Response,
+):
+    """
+    Tokenize text or image file into sentences or words.
 
-    remove_temp_directory()
-    tokens = st.sent_tokenize(text)
-    return {"Length": len(tokens), "Tokens": tokens}
+    :param fileinput: File to be tokenized
+
+    :param tokenize_level: Tokenize at level
+
+    :param need_frequency: Need Frequency of Words/Sentences?
+    """
+    try:
+        if fc.check_file_type(fileinput.filename).startswith("image"):
+            location = save_temp(fileinput)
+            text = tess.process_image(location)
+            remove_temp_directory()
+        elif fc.check_file_type(fileinput.filename).startswith("text"):
+            text = fileinput.file.read().decode("utf-8")
+        else:
+            response.status_code = status.HTTP_400_BAD_REQUEST
+            return {"Error": "File type not supported."}
+
+        match tokenize_level:
+            case "sentence":
+                tokens = st.sent_tokenize(text)
+            case "words":
+                tokens = tokenize_at_word_level(text)
+        if need_frequency:
+            tokens = frequency_of_tokens(tokens, tokenize_level)
+        return {"Length": len(tokens), "Tokens": tokens}
+    except:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"Error": "Something went wrong!"}
